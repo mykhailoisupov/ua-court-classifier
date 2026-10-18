@@ -1,0 +1,2 @@
+# Keep LF everywhere: Makefile, shell scripts and Dockerfiles run on Linux (CI, containers, Minikube).
+* text=auto eol=lf

@@ -138,7 +138,116 @@ Single-label multi-class **text classification**: given the claim text at regist
 
 ### 6.1 High-level design
 
-_Diagrams are added in step 3 of Lab 1: system context, data flow on the seven layers, deployment (first draft). They use the component names of §6.2._
+The three diagrams use the component names of §6.2; Mermaid sources are kept here so the diagrams change together with the text.
+
+**System context.** The system is one box; everything around it belongs to someone else. In the replay, labels come from the register metadata; in production they come back from the clerk.
+
+```mermaid
+flowchart LR
+    DSA["State Judicial Administration<br/>data.gov.ua: monthly register snapshots"]
+    FILES["ЄДРСР file server<br/>od.reyestr.court.gov.ua"]
+    RADA["zakon.rada.gov.ua<br/>legislation (from Lab 3)"]
+    CMS["Court case-management system<br/>clerk at registration<br/>(replay script in the labs)"]
+    ENG["ML engineer on duty<br/>e-mail / Telegram"]
+
+    SYS["<b>ua-court-classifier</b><br/>ingests, trains, serves, monitors"]
+
+    DSA -- "case metadata + category_code labels" --> SYS
+    FILES -- "first-ruling texts (RTF)" --> SYS
+    RADA -- "law texts for retrieval" --> SYS
+    CMS -- "claim text, court, defendant" --> SYS
+    SYS -- "top-3 categories + probabilities" --> CMS
+    CMS -- "clerk's final category (label)" --> SYS
+    SYS -- "alerts: drift, freshness, latency" --> ENG
+
+    classDef system fill:#1f4fa3,stroke:#0b2a66,color:#ffffff
+    class SYS system
+```
+
+**Data flow on the seven layers.** The three marks:
+
+- **Version point** — after ingestion, each monthly snapshot is added to DVC (remote on MinIO) before anything reads it, so every model can name the exact snapshot it was trained on.
+- **Quality gate** — between preprocessing and the feature store: schema of `documents.csv`, impossible dates (a ruling dated before its case was registered), leakage (`категорія <digits>` left in the text), and batch volume vs the previous month. A failed gate stops the run before the feature store changes.
+- **Where training and serving diverge** — at the feature store: training reads the offline store (point-in-time joins on event time), `category-api` reads the online store. The batch replay also reads point-in-time features from the offline store.
+
+```mermaid
+flowchart TB
+    subgraph L1["1 · Data ingestion"]
+        ING["Airflow DAG ingest_monthly<br/>batch, monthly: register snapshot<br/>+ sampled ruling RTFs → MinIO raw<br/>dvc add snapshot"]
+    end
+    VP(("version<br/>point"))
+    subgraph L2["2 · Preprocessing"]
+        PRE["first ruling per case → claim section<br/>mask judge, category code, case number<br/>event time · drop removed (status=0)<br/>→ MinIO clean + PostgreSQL cases"]
+    end
+    QG(("quality<br/>gate"))
+    subgraph L3["3 · Feature store: Feast"]
+        OFF["offline<br/>Parquet in MinIO"]
+        ON["online<br/>PostgreSQL"]
+    end
+    subgraph L4["4 · Training pipeline"]
+        TR["Airflow DAG train_candidate<br/>12-month window as of T<br/>baseline + TF-IDF / logistic regression<br/>evaluate on month M−2"]
+    end
+    subgraph L5["5 · Registry and deploy"]
+        REG["MLflow registry<br/>data version + commit<br/>promotion gates"]
+    end
+    subgraph L6["6 · Inference"]
+        RT["real-time<br/>category-api"]
+        BT["batch<br/>monthly replay"]
+        EXP["explain (Lab 3)<br/>pgvector + LLM via API"]
+    end
+    CONS["Consumer<br/>court case-management system<br/>(replay script in the labs)"]
+    subgraph L7["7 · Monitoring and retraining loop"]
+        MON["Airflow DAG monitor_monthly · Evidently · Prometheus, Grafana<br/>PSI of predictions > 0.2 · input drift · macro-F1 (M−2) drops > 5 pts<br/>freshness > 40 days · volume ±50% · p95 > 300 ms<br/>alert → ML engineer · retrain → challenger"]
+    end
+
+    ING --> VP --> PRE --> QG --> OFF
+    OFF == "training path (offline store)" ==> TR
+    OFF -- materialize --> ON
+    ON == "serving path (online store)" ==> RT
+    TR -- evaluate --> REG
+    REG -- "by alias champion" --> L6
+    L6 -- "top-3 + probabilities" --> CONS
+    L6 -- "inputs, predictions, delayed labels, clerk's choice" --> MON
+    MON -- "trigger retraining" --> TR
+
+    classDef mark fill:#ffffff,stroke:#c0392b,stroke-width:2px,color:#c0392b
+    class VP,QG mark
+```
+
+**Deployment, first draft.** Every component we run locally, with its managed equivalent in italics (AWS / GCP / Azure). Lab 4 replaces this with the real cluster topology.
+
+```mermaid
+flowchart TB
+    DVC["DVC 3.67.1<br/>CLI in Airflow tasks and on the developer machine<br/><i>S3 / GCS / Azure Blob remote</i>"]
+    subgraph HOST["Laptop: Docker Desktop (Labs 2–3) → Minikube 1.33.1 (from Lab 4) · cloud: Amazon EKS / GKE / AKS"]
+        MINIO["MinIO (pgsty/silo)<br/>raw · clean · features · DVC remote · MLflow artifacts<br/><i>S3 / Cloud Storage / Blob Storage</i>"]
+        PG["PostgreSQL 16<br/>cases · Feast online store · Airflow, MLflow metadata<br/><i>RDS / Cloud SQL / Azure DB for PostgreSQL</i>"]
+        VEC["pgvector 0.8.7<br/>in PostgreSQL, Lab 3<br/><i>OpenSearch Serverless / Vertex AI Vector Search / Azure AI Search</i>"]
+        AF["Apache Airflow 3.3.1<br/>ingest_monthly · train_candidate · monitor_monthly<br/><i>MWAA / Cloud Composer / Data Factory</i>"]
+        MLF["MLflow 3.16.1<br/>tracking + model registry<br/><i>SageMaker with MLflow / Vertex AI / Azure ML</i>"]
+        FEAST["Feast 0.66.0<br/>feature store<br/><i>SageMaker / Vertex AI / Azure ML feature store</i>"]
+        API["category-api<br/>FastAPI + model<br/><i>pod on EKS / GKE / AKS</i>"]
+        REGY["Minikube's built-in registry<br/>container images<br/><i>ECR / Artifact Registry / ACR</i>"]
+        EV["Evidently<br/>drift reports<br/><i>SageMaker Model Monitor / Vertex AI / Azure ML monitoring</i>"]
+        PROM["Prometheus, Grafana<br/>metrics, dashboards, alerts<br/><i>CloudWatch / Cloud Monitoring / Azure Monitor</i>"]
+    end
+    LLM["LLM via API (Lab 3)<br/><i>Bedrock / Vertex AI / Azure OpenAI</i>"]
+
+    DVC -- "push / pull snapshots" --> MINIO
+    MINIO ~~~ AF
+    PG ~~~ MLF
+    VEC ~~~ FEAST
+    AF ~~~ API
+    MLF ~~~ REGY
+    FEAST ~~~ EV
+    FEAST ~~~ PROM
+    API -. "explanations (Lab 3)" .-> LLM
+
+    classDef svc fill:#e6f2fb,stroke:#1f4fa3,color:#0b2a66
+    classDef model fill:#1f4fa3,stroke:#0b2a66,color:#ffffff
+    class MINIO,PG,VEC,AF,MLF,FEAST,EV,PROM,REGY,DVC,LLM svc
+    class API model
+```
 
 ### 6.2 Infra
 
@@ -159,6 +268,8 @@ Local stack from the course reference table; the cloud columns name the managed 
 | Model service `category-api` (FastAPI + model) | Pod on Minikube | Pod on EKS | Pod on GKE | Pod on AKS | Lab 4 |
 | Model and data monitoring | Evidently | SageMaker Model Monitor | Vertex AI Model Monitoring | Azure ML model monitoring | Lab 4 |
 | Metrics store and dashboards | Prometheus, Grafana | Amazon CloudWatch | Cloud Monitoring | Azure Monitor | Lab 4 |
+
+Where it runs: in Labs 2–3 these components run as containers on Docker Desktop on the laptop; from Lab 4 they move into Minikube (cloud: Amazon EKS / GKE / AKS). DVC is a CLI, not a service: it runs inside Airflow tasks and on the developer machine.
 
 Not needed: Kafka and Spark — the source publishes monthly, and peak load is ~10 requests/s.
 

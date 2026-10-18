@@ -2,7 +2,7 @@
 
 > Follows the [ml-design-docs](https://github.com/eugeneyan/ml-design-docs) template. Section numbers are fixed: later labs revise sections by these numbers.
 > Unknowns are written as **Assumption:** and kept until a later lab replaces them with a measurement.
-> Data figures were measured on the 2021–2023 archives of the register (first-instance administrative courts) on 2026-10-18.
+> Data figures were measured on the 2021–2023 archives of the register (first-instance administrative courts) on 2026-10-18 and are reproduced by `make analysis` (see [`analysis/README.md`](../analysis/README.md)).
 
 ## 1. Overview
 
@@ -18,7 +18,7 @@ The desired outcome is a reproducible, monitored pipeline whose suggestions a cl
 
 **How often.** Once per new claim, synchronously, while the clerk fills in the registration card.
 
-**What happens when they are wrong.** A wrong category can send the case to a judge of the wrong specialization and distorts the court statistics the State Judicial Administration publishes; fixing it later costs clerk and judge time. Today about **2.0%** of cases change category during their life (measured on 2022 cases), which is the baseline the system must not worsen. Because the clerk confirms every suggestion, a wrong suggestion costs a few seconds of correction, not a wrong registration.
+**What happens when they are wrong.** A wrong category can send the case to a judge of the wrong specialization and distorts the court statistics the State Judicial Administration publishes; fixing it later costs clerk and judge time. Today about **3.6%** of cases change category during their life (cases registered in 2021–2023), which is the baseline the system must not worsen. Because the clerk confirms every suggestion, a wrong suggestion costs a few seconds of correction, not a wrong registration.
 
 **Why a system and not a notebook.** The mix of cases moves fast: Chernobyl-related pension claims went from 8% of new cases in 2021 to 22% in 2022 and back to 11% in 2023, and claims of discharged servicemen grew from 20% to 37%. A model trained once decays within months, so it needs scheduled ingestion, retraining, comparison with the current model and monitoring — the five labs of this course.
 
@@ -26,7 +26,7 @@ The desired outcome is a reproducible, monitored pipeline whose suggestions a cl
 
 | Layer | Metric | Target | Notes |
 |---|---|---|---|
-| Business | Share of suggestions the clerk accepts as top-1 without change | **≥ 80%** (**Assumption:** measurable only in production; in the replay, top-1 accuracy is its proxy) | Guardrail: share of cases whose category is changed later stays **≤ 2.0%** (today's level) |
+| Business | Share of suggestions the clerk accepts as top-1 without change | **≥ 80%** (**Assumption:** measurable only in production; in the replay, top-1 accuracy is its proxy) | Guardrail: share of cases whose category is changed later stays **≤ 3.6%** (today's level) |
 | Model | Macro-F1 over the 20 classes + "other" on the newest fully-labelled month | **≥ 0.70** (**Assumption:** recalibrated after the Lab 2 baseline) and **≥ baseline + 0.10** | Optimizing metric |
 | Model | Top-3 accuracy | **≥ 0.95** | Satisficing metric: the clerk sees three options |
 | System | p95 latency of `category-api` | **≤ 300 ms** | Satisficing |
@@ -76,17 +76,17 @@ Single-label multi-class **text classification**: given the claim text at regist
 
 **Source.** ЄДРСР open data on data.gov.ua, published by the State Judicial Administration: one archive per year (2006–2026 are available), refreshed monthly, each holding `documents.csv` (one row per court document: `doc_id`, `court_code`, `judgment_code`, `justice_kind`, `category_code`, `cause_num`, `adjudication_date`, `receipt_date`, `doc_url`, `status`, `date_publ`) and dictionaries. Texts are RTF files (cp1251) behind `doc_url`.
 
-**Unit and input.** The register holds court documents, not claims. We group documents by case number (`cause_num`) and keep the **earliest published document of each case**, which is a ruling (ухвала) opening proceedings or leaving the claim without motion in **99.9%** of cases. Its section after "встановив" (found in 99.7% of rulings) restates the claim's demands almost verbatim; that section, cleaned, is the model input.
+**Unit and input.** The register holds court documents, not claims. We group documents by case number (`cause_num`) and keep the **earliest published document of each case**, which is a ruling (ухвала) opening proceedings or leaving the claim without motion in **99.9%** of cases. Its section after "встановив" (found in all 299 rulings of a random sample) restates the claim's demands almost verbatim; that section, cleaned, is the model input.
 
 **Time.** The register has no registration date. We keep three timestamps:
 
 | Timestamp | Source | Used for |
 |---|---|---|
-| Event time ≈ filing | The filing date stated in the ruling ("23.05.2022 до суду надійшов позов"), extractable in **28%** of rulings; otherwise `adjudication_date` of the first ruling. Where both exist, the median gap is **5 days**. Case numbers are assigned at registration and their order matches the order of first-ruling dates (Spearman **0.998**). | Monthly batches, time split, drift windows |
+| Event time ≈ filing | The filing date stated in the ruling ("23.05.2022 до суду надійшов позов"), extractable in **32%** of rulings; otherwise `adjudication_date` of the first ruling. Where both exist, the median gap is **5 days**. Case numbers are assigned at registration and their order matches the order of first-ruling dates (Spearman **0.998**). | Monthly batches, time split, drift windows |
 | Availability time | `date_publ` of the first ruling (p50 3 days after the ruling; p90 5–47 days in 2022–2023) | A training set "as of T" contains only cases published by T |
 | Label time | Production: at registration (clerk). Replay: equal to availability time | Monitoring with delayed labels |
 
-**Labels.** `category_code` is assigned by the clerk at registration and copied to every document of the case. It is noisy: 2.0% of cases carry more than one category over their life. We use the category on the first ruling, which is the decision we automate.
+**Labels.** `category_code` is assigned by the clerk at registration and copied to every document of the case. It is noisy: 3.6% of cases carry more than one category over their life. We use the category on the first ruling, which is the decision we automate.
 
 **Serving time vs training time.** At serving time the system sees the real claim, the court and the defendant. At training time it sees the judge's restatement of the claim. Fields that exist only after registration are excluded: the judge (assigned by automated distribution *from* the category), the procedure type, and anything from later documents.
 
@@ -113,7 +113,7 @@ Single-label multi-class **text classification**: given the claim text at regist
 
 | Feature | Training-time source | Serving-time source |
 |---|---|---|
-| `claim_text` | Claim section of the first ruling, with judge names, the category code (present in the text of **15.7%** of rulings), the case number and procedural boilerplate masked | Claim text in the registration request |
+| `claim_text` | Claim section of the first ruling, with judge names, the category code (present in the text of **13.4%** of rulings), the case number and procedural boilerplate masked | Claim text in the registration request |
 | `defendant_type` | Rules over the ruling's opening sentence | Defendant field of the registration card |
 | `court_code`, `region` | `court_code` in metadata | The receiving court, known to the caller |
 | `court_category_prior_90d` | Feast offline store, point-in-time join on event time | Feast online store, materialized daily |
@@ -164,7 +164,7 @@ Not needed: Kafka and Spark — the source publishes monthly, and peak load is ~
 
 ### 6.3 Performance
 
-**Online for the consumer, batch for the replay.** The clerk waits for the suggestion while filling in the card, so `category-api` answers synchronously (p95 ≤ 300 ms; the p90 ruling is ~9,000 characters, and TF-IDF + logistic regression scores it in milliseconds). Batch scoring of a monthly batch (10k–56k cases, minutes on CPU) is used for the replay, backfills and monitoring. Throughput target: 10 requests/s on one replica (**Assumption:** confirmed by a load test in Lab 4).
+**Online for the consumer, batch for the replay.** The clerk waits for the suggestion while filling in the card, so `category-api` answers synchronously (p95 ≤ 300 ms; the p90 ruling is ~9,400 characters, and TF-IDF + logistic regression scores it in milliseconds). Batch scoring of a monthly batch (10k–56k cases, minutes on CPU) is used for the replay, backfills and monitoring. Throughput target: 10 requests/s on one replica (**Assumption:** confirmed by a load test in Lab 4).
 
 ### 6.4 Security
 
@@ -218,13 +218,13 @@ Always-on managed control planes (MWAA, the MLflow server, OpenSearch) make up ~
 | Risk | Mitigation |
 |---|---|
 | Training–serving skew: the model trains on the judge's restatement and serves on real claims | Train only on the claim section; start production in shadow mode and compare with clerks' choices before showing suggestions; monitor input descriptors against the training set. |
-| Label leakage through the text: the category code is in 15.7% of rulings, judge names in 96% | Mask both in preprocessing; the quality gate fails the run if `категорія <digits>` survives. |
-| Label noise: 2.0% of cases change category | Report metrics also on cases with a stable category; keep the noisy share on a dashboard. |
+| Label leakage through the text: the category code is in 13.4% of rulings, judge names in 97% | Mask both in preprocessing; the quality gate fails the run if `категорія <digits>` survives. |
+| Label noise: 3.6% of cases change category | Report metrics also on cases with a stable category; keep the noisy share on a dashboard. |
 | Prior shift (Chernobyl claims 8% → 22% → 11%) | Monthly retraining on a 12-month window, class weights, PSI alert on predicted categories. |
 | Source outage or late refresh (e.g., planned register downtime on 2 Dec 2025) | Idempotent ingestion keyed by snapshot checksum; freshness alarm; serving continues on the last good model. |
 | Silent schema change in `documents.csv` | Schema check in the quality gate fails the run before anything downstream changes. |
 | Load on the court server while downloading texts | Sample 2,000 cases per month, ≤ 3 requests/s, cache every file in MinIO. |
-| The filing date is in only 28% of rulings | Fall back to the first-ruling date (median 5 days later) and document the bias in §5.2. |
+| The filing date is in only 32% of rulings | Fall back to the first-ruling date (median 5 days later) and document the bias in §5.2. |
 
 ## 7. Appendix
 

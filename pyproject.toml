@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Suggests the category of a new administrative court case from the claim text, trained on Ukraine's open court register (EDRSR)."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pandas>=3.0.6",
+    "pyarrow>=26.0.0",
+]
 
 [tool.ruff]
 line-length = 100

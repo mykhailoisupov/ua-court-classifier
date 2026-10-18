@@ -13,7 +13,10 @@ Requires [uv](https://docs.astral.sh/uv/) and GNU `make`.
 ```bash
 make setup   # install the pinned environment (uv.lock) and the pre-commit hook
 make lint    # run ruff, the same check CI runs on every push
+make analysis  # optional: reproduce the data figures of the design doc (~1 GB download)
 ```
+
+The data analysis behind the design decisions is described in [`analysis/README.md`](analysis/README.md).
 
 ## Maturity scorecard
 

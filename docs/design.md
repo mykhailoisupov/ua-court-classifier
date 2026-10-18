@@ -56,7 +56,7 @@ The desired outcome is a reproducible, monitored pipeline whose suggestions a cl
 | Reproducibility | Every registered model points to the DVC version of its snapshot, the git commit and its parameters in MLflow; `make setup` rebuilds the environment from `uv.lock`; random seeds are fixed. |
 | Adaptability | New data enters as a monthly snapshot through the ingestion DAG. New models enter as challengers and are promoted by alias (§5.4). A category not in the 20 classes maps to "other" until it reaches **200** cases in 12 months (**Assumption**); only 5 such categories (13 cases) appeared in 2022. |
 | Observability without ground truth | Labels reach the pipeline only when the first ruling is published (p50 3 days, p90 5–47 days in 2022–2023) and the next monthly snapshot arrives. Until then we monitor input descriptors (text length, out-of-vocabulary share, defendant type, court mix), the distribution of predicted categories (PSI) and mean top-1 confidence. Accuracy for month M is computed after the snapshot of month M+2. |
-| Cost and resource ceilings | Local: runs on a 16 GB laptop, Minikube at 4 GB, training ≤ **30 min** on CPU. Cloud: ≤ **$300/month** for the lean variant, ≈ **$1,250/month** for the fully managed reference (§6.7). |
+| Cost and resource ceilings | Local: runs on a 16 GB laptop, Minikube at 4 GB, training ≤ **30 min** on CPU. Cloud (eu-central-1): ceiling **$300/month** for the lean variant (estimated $275), ≈ **$1,300/month** for the fully managed reference (§6.7). |
 
 ### 4.1 In scope and out of scope
 
@@ -300,21 +300,34 @@ Every request logs: request id, timestamp, court, input length, out-of-vocabular
 
 ### 6.7 Cost
 
-Monthly estimate of the AWS column, us-east-1 list prices, 730 hours (**Assumption:** eu-central-1, closer to Ukraine, costs roughly 10–20% more). **To be confirmed in the AWS Pricing Calculator; paste the saved estimate link here.**
+Monthly estimate of the AWS column in **eu-central-1 (Frankfurt)**, the region closest to Ukraine, at on-demand list prices and 730 hours per month. Unit prices come from the AWS Price List API (the price data behind the AWS Pricing Calculator), retrieved on 2026-10-18. Saved calculator estimate: _link to be added_.
 
-| Service | Assumption | $/month |
+**Usage assumptions.** ~40k new cases per month (2023 average); explanations requested for 10% of them (4k/month, ~3,000 input and ~400 output tokens each); 60 GB in object storage; services run 24/7; no free tier, reservations or savings plans.
+
+| Service | Configuration and unit price | $/month |
 |---|---|---|
-| Amazon MWAA | Small environment, $0.49/h | ≈ 360 |
-| SageMaker with MLflow | Small tracking server, ~$0.70/h (**Assumption**) | ≈ 510 |
-| OpenSearch Serverless (vector) | Dev/test collection, 1 OCU at $0.24/h | ≈ 175 |
-| Amazon EKS | Control plane $0.10/h + 2 × t3.medium nodes + 40 GB EBS | ≈ 140 |
-| Amazon RDS for PostgreSQL | db.t4g.micro + 20 GB gp3 | ≈ 15 |
-| Amazon Bedrock | ~8M tokens/month (explanations for 10% of cases × ~3k tokens) | ≈ 25 (**Assumption:** measured in Lab 3) |
-| CloudWatch, Model Monitor, Feature Store, ECR, S3 (~50 GB), transfer | Small volumes | ≈ 30 |
-| **Total, fully managed** | | **≈ 1,250** |
-| **Lean variant** | Airflow and MLflow self-hosted on EKS (+1 t3.large), pgvector on RDS (db.t4g.small) instead of OpenSearch | **≈ 280** |
+| Amazon MWAA | mw1.micro environment, $0.29/h (1 scheduler + 1 worker; fits 3 DAGs at a monthly cadence); 10 GB metadata, $0.10/GB-month | 212.70 |
+| SageMaker with MLflow | Small tracking server 24/7, $0.886/h; 1 GB metadata, $0.119/GB-month | 646.90 |
+| OpenSearch Serverless (vector) | Dev/test collection: 0.5 indexing + 0.5 search OCU, $0.339/OCU-hour | 247.47 |
+| Amazon EKS | Cluster $0.10/h + 2 × t3.medium nodes, $0.048/h + 2 × 20 GB gp3, $0.0952/GB-month | 146.89 |
+| Amazon RDS for PostgreSQL | db.t4g.micro Single-AZ, $0.019/h + 20 GB gp3, $0.137/GB-month | 16.61 |
+| Amazon Bedrock | Mistral Large 3 (**Assumption:** the model is chosen in Lab 3): 12M input tokens, $0.0006/1K + 1.6M output tokens, $0.0018/1K; Titan embeddings, 2M tokens, $0.0002/1K | 10.48 |
+| Amazon CloudWatch | 5 GB logs, $0.63/GB + storage, $0.0324/GB-month; 20 custom metrics, $0.30; 10 alarms, $0.10 | 10.31 |
+| SageMaker Model Monitor | 30 h/month of ml.m5.large processing, $0.138/h | 4.14 |
+| Amazon S3 | 60 GB Standard, $0.0245/GB-month + ~$0.50 of requests | 1.97 |
+| AWS Secrets Manager | 4 secrets, $0.40 each | 1.60 |
+| SageMaker Feature Store | Online store: 25k writes, $1.525/M + 40k reads, $0.305/M + 1 GB, $0.5508/GB-month | 0.60 |
+| Amazon ECR | 3 GB of images, $0.10/GB-month | 0.30 |
+| **Total, fully managed** | | **≈ 1,300** |
 
-Always-on managed control planes (MWAA, the MLflow server, OpenSearch) make up ~83% of the managed total, while the model itself costs almost nothing to run.
+**Lean variant: ≈ $275/month.** Airflow and MLflow are self-hosted on one extra t3.large node ($0.096/h), and pgvector on a db.t4g.small RDS instance ($0.037/h, 30 GB) replaces OpenSearch Serverless. The node group becomes 2 × t3.medium + 1 × t3.large, giving EKS $218.87 and RDS $31.12; Evidently and Feast run on the cluster instead of Model Monitor and Feature Store. S3, ECR, CloudWatch, Secrets Manager and Bedrock are unchanged.
+
+**What drives the cost.** The three always-on managed control planes (the MLflow tracking server, OpenSearch Serverless, MWAA) are $1,107, or 85% of the managed total. The model itself, a CPU pod and ~$10 of LLM tokens, is almost free. The cheapest levers, in order:
+1. Stop the MLflow tracking server outside the monthly training window: −$580.
+2. Replace OpenSearch Serverless with pgvector: −$247.
+3. Self-host Airflow: −$140 net of the extra node.
+
+The estimate is most sensitive to the MWAA class: if training does not fit the micro worker (1 vCPU, 3 GB RAM), mw1.small at $0.49/h adds $146.
 
 ### 6.8 Integration points
 

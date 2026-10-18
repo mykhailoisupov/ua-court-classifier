@@ -1,0 +1,21 @@
+[project]
+name = "ua-court-classifier"
+version = "0.1.0"
+description = "Suggests the category of a new administrative court case from the claim text, trained on Ukraine's open court register (EDRSR)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# pyflakes + pycodestyle errors, import order, pyupgrade, bugbear
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.7.0",
+    "ruff>=0.17.1",
+]

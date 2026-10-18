@@ -1,0 +1,20 @@
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# Data never goes into git: raw register archives and derived files are versioned with DVC (Lab 2)
+data/
+*.zip
+*.rtf
+
+# Local secrets and run artifacts
+.env
+mlruns/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
